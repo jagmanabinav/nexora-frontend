@@ -1,0 +1,22 @@
+# Installed dependencies
+node_modules/
+
+# Generated build output
+**/.next/
+**/dist/
+**/build/
+coverage/
+.turbo/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.log
+
+# OS/editor files
+.DS_Store

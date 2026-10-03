@@ -1,0 +1,38 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "incremental": true,
+    "noEmit": true,
+    "rootDir": ".",
+    "outDir": ".next",
+    "paths": {
+      "@/*": [
+        "./app/*",
+        "./src/*",
+        "./public/*"
+      ],
+      "@nexora/shared": [
+        "../../packages/shared/src"
+      ],
+      "@nexora/shared/*": [
+        "../../packages/shared/src/*"
+      ]
+    },
+    "allowJs": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
