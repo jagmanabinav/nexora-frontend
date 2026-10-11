@@ -1,7 +1,7 @@
 {
   "name": "fabwash",
   "version": "1.0.0",
-  "description": "FabWash App - Laundry management system",
+  "description": "FabWash - Textile fabric washing management system",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3001",

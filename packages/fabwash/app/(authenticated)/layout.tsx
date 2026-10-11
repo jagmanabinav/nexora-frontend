@@ -1,22 +1,22 @@
-'use client'
+"use client";
 
-import React from 'react'
-import { useAuthContext } from '@nexora/shared'
-import { useRouter } from 'next/navigation'
+import React from "react";
+import { useAuthContext } from "@nexora/shared";
+import { useRouter } from "next/navigation";
 
 interface ProtectedLayoutProps {
-  children: React.ReactNode
+  children: React.ReactNode;
 }
 
 export default function ProtectedLayout({ children }: ProtectedLayoutProps) {
-  const { isAuthenticated, loading } = useAuthContext()
-  const router = useRouter()
+  const { isAuthenticated, loading } = useAuthContext();
+  const router = useRouter();
 
   React.useEffect(() => {
     if (!loading && !isAuthenticated) {
-      router.push('/login')
+      router.replace("/login");
     }
-  }, [isAuthenticated, loading, router])
+  }, [isAuthenticated, loading, router]);
 
   if (loading) {
     return (
@@ -27,12 +27,12 @@ export default function ProtectedLayout({ children }: ProtectedLayoutProps) {
           <p className="text-gray-600">Loading...</p>
         </div>
       </div>
-    )
+    );
   }
 
   if (!isAuthenticated) {
-    return null
+    return null;
   }
 
-  return <>{children}</>
+  return <>{children}</>;
 }

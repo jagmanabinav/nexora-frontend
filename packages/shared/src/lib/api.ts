@@ -1,34 +1,29 @@
-/**
- * Centralized API Service Layer
- * Handles all backend communication with FastAPI backend
- * Consistent error handling and retry logic
- *
- * Backend: FastAPI running on http://localhost:8000/api/v1
- * Endpoints are organized by resource (auth, applications, billing, rbac, advanced)
- */
+import axios from "axios";
+import { apiClient } from "../api/client";
 
 interface ApiResponse<T = unknown> {
-  data?: T
-  success?: boolean
+  data: T;
+  success?: boolean;
   error?: {
-    code: string
-    message: string
-    details?: Record<string, string>
-  }
+    code?: string;
+    message?: string;
+    details?: Record<string, unknown>;
+  };
   pagination?: {
-    total: number
-    page: number
-    limit: number
-    totalPages: number
-  }
+    total: number;
+    page: number;
+    limit: number;
+    total_pages?: number;
+    totalPages?: number;
+  };
 }
 
 interface ApiRequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
-  headers?: Record<string, string>
-  body?: unknown
-  retries?: number
-  skipErrorHandling?: boolean
+  method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  headers?: Record<string, string>;
+  body?: unknown;
+  params?: Record<string, string | number | boolean | undefined>;
+  retries?: number;
 }
 
 export class ApiError extends Error {
@@ -36,260 +31,239 @@ export class ApiError extends Error {
     public statusCode: number,
     public code: string,
     message: string,
-    public details?: Record<string, string>
+    public details?: Record<string, string>,
   ) {
-    super(message)
-    this.name = 'ApiError'
+    super(message);
+    this.name = "ApiError";
   }
 }
 
-/**
- * Retry with exponential backoff
- * Retries failed requests with increasing delays
- * Skips retry on 4xx client errors (except 408, 429)
- */
+export interface FabWashGstInvoice {
+  id: string;
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string;
+  status: string;
+  seller: GstInvoiceParty;
+  buyer: GstInvoiceParty;
+  place_of_supply: string;
+  place_of_supply_code: string;
+  supply_type: string;
+  reverse_charge: string;
+  line_items: GstInvoiceLineItem[];
+  taxable_value: string;
+  cgst_amount: string;
+  sgst_amount: string;
+  igst_amount: string;
+  total_gst: string;
+  invoice_total: string;
+  reference?: string | null;
+  notes?: string | null;
+}
+
+export interface GstInvoiceParty {
+  name: string;
+  address: string;
+  gstin: string;
+  state: string;
+  state_code: string;
+  email?: string | null;
+  phone?: string | null;
+}
+
+export interface GstInvoiceLineItem {
+  description: string;
+  sac: string;
+  quantity: string;
+  unit: string;
+  rate: string;
+  gst_rate: string;
+  taxable_value: string;
+  cgst_amount: string;
+  sgst_amount: string;
+  igst_amount: string;
+}
+
+export interface CreateFabWashGstInvoice {
+  invoice_date: string;
+  due_date: string;
+  seller: GstInvoiceParty;
+  buyer: GstInvoiceParty;
+  place_of_supply: string;
+  place_of_supply_code: string;
+  reverse_charge?: boolean;
+  line_items: Array<{
+    description: string;
+    sac: string;
+    quantity: number;
+    unit: string;
+    rate: number;
+    gst_rate: number;
+  }>;
+  reference?: string;
+  notes?: string;
+}
+
 export async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries: number = 3,
-  initialDelayMs: number = 1000
+  initialDelayMs: number = 500,
 ): Promise<T> {
-  let lastError: Error | null = null
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
-      return await fn()
+      return await fn();
     } catch (error) {
-      lastError = error as Error
-
-      // Don't retry on client errors (4xx) except timeout (408) and rate limit (429)
-      if (error instanceof ApiError) {
-        const isRetryableClientError = error.statusCode === 408 || error.statusCode === 429
-        if (error.statusCode >= 400 && error.statusCode < 500 && !isRetryableClientError) {
-          throw error
-        }
+      if (
+        error instanceof ApiError &&
+        error.statusCode >= 400 &&
+        error.statusCode < 500 &&
+        error.statusCode !== 408 &&
+        error.statusCode !== 429
+      ) {
+        throw error;
       }
-
-      // Don't retry on last attempt
-      if (attempt === maxRetries) {
-        throw error
-      }
-
-      // Wait before retrying (exponential backoff)
-      const delayMs = initialDelayMs * Math.pow(2, attempt)
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      if (attempt >= maxRetries) throw error;
+      await new Promise((resolve) =>
+        setTimeout(resolve, initialDelayMs * 2 ** attempt),
+      );
     }
   }
-
-  throw lastError || new Error('Unknown error in retry loop')
 }
 
-/**
- * Get JWT token from localStorage
- */
-function getAuthToken(): string | null {
-  if (typeof window === 'undefined') return null
-  return localStorage.getItem('access_token')
-}
-
-/**
- * Core API request function with error handling
- * Integrates with FastAPI backend at http://localhost:8000/api/v1
- */
 async function makeRequest<T>(
   endpoint: string,
-  options: ApiRequestOptions = {}
+  options: ApiRequestOptions = {},
 ): Promise<ApiResponse<T>> {
-  const { method = 'GET', headers = {}, body, retries = 3, skipErrorHandling = false } = options
+  const { method = "GET", headers, body, params, retries = 2 } = options;
+  const request = () =>
+    apiClient.request<ApiResponse<T>>({
+      url: `/api/v1${endpoint}`,
+      method,
+      headers,
+      data: body,
+      params,
+    });
 
-  // FastAPI backend configuration
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'
-  const url = `${apiBaseUrl}${endpoint}`
+  try {
+    return method === "GET"
+      ? await retryWithBackoff(request, retries)
+      : await request();
+  } catch (error) {
+    if (!axios.isAxiosError(error)) throw error;
 
-  const token = getAuthToken()
-  const requestHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...headers,
+    const responseBody = error.response?.data;
+    const bodyRecord =
+      typeof responseBody === "object" && responseBody !== null
+        ? (responseBody as Record<string, unknown>)
+        : {};
+    const nestedError =
+      typeof bodyRecord.error === "object" && bodyRecord.error !== null
+        ? (bodyRecord.error as Record<string, unknown>)
+        : {};
+    const message =
+      (typeof bodyRecord.detail === "string" && bodyRecord.detail) ||
+      (typeof nestedError.message === "string" && nestedError.message) ||
+      error.message;
+
+    throw new ApiError(
+      error.response?.status ?? 0,
+      typeof nestedError.code === "string"
+        ? nestedError.code
+        : "API_REQUEST_FAILED",
+      message,
+      typeof nestedError.details === "object" && nestedError.details !== null
+        ? Object.fromEntries(
+            Object.entries(nestedError.details).filter(
+              (entry): entry is [string, string] =>
+                typeof entry[1] === "string",
+            ),
+          )
+        : undefined,
+    );
   }
-
-  // Add authorization token if available
-  if (token) {
-    requestHeaders.Authorization = `Bearer ${token}`
-  }
-
-  const requestOptions: RequestInit = {
-    method,
-    headers: requestHeaders,
-  }
-
-  if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
-    requestOptions.body = JSON.stringify(body)
-  }
-
-  return retryWithBackoff(async () => {
-    const response = await fetch(url, requestOptions)
-    const contentType = response.headers.get('content-type')
-    
-    let data: unknown = null
-    if (contentType?.includes('application/json')) {
-      data = await response.json()
-    } else {
-      data = await response.text()
-    }
-
-    if (!response.ok) {
-      // Handle FastAPI error response format
-      const errorData = typeof data === 'object' ? (data as Record<string, unknown>) : {}
-      const detail = (errorData as Record<string, unknown>)?.detail
-
-      throw new ApiError(
-        response.status,
-        (errorData as Record<string, unknown>)?.error_code?.toString() || 'UNKNOWN_ERROR',
-        typeof detail === 'string' ? detail : `HTTP ${response.status}: ${response.statusText}`,
-        typeof (errorData as Record<string, unknown>)?.errors === 'object'
-          ? (errorData as Record<string, unknown>)?.errors as Record<string, string>
-          : undefined
-      )
-    }
-
-    // FastAPI returns data directly or wrapped in response object
-    return (data as ApiResponse<T>) || { data }
-  }, retries)
 }
 
-/**
- * API Client - Organized by resource
- */
 export const api = {
-  // Fabric Batches
+  fabwashInvoices: {
+    list: () =>
+      makeRequest<FabWashGstInvoice[]>("/fabwash/invoices"),
+    create: (data: CreateFabWashGstInvoice) =>
+      makeRequest<FabWashGstInvoice>("/fabwash/invoices", {
+        method: "POST",
+        body: data,
+      }),
+    get: (id: string) =>
+      makeRequest<FabWashGstInvoice>(
+        `/fabwash/invoices/${encodeURIComponent(id)}`,
+      ),
+  },
   fabricBatches: {
-    list: async (page = 1, limit = 10, search = '') =>
-      makeRequest('/fabric-batches', {
-        method: 'GET',
-      }),
-
-    get: async (id: string) =>
-      makeRequest(`/fabric-batches/${id}`),
-
-    create: async (data: unknown) =>
-      makeRequest('/fabric-batches', {
-        method: 'POST',
+    list: (page = 1, limit = 10, search = "") =>
+      makeRequest("/fabric-batches", { params: { page, limit, search } }),
+    get: (id: string) =>
+      makeRequest(`/fabric-batches/${encodeURIComponent(id)}`),
+    create: (data: unknown) =>
+      makeRequest("/fabric-batches", { method: "POST", body: data }),
+    update: (id: string, data: unknown) =>
+      makeRequest(`/fabric-batches/${encodeURIComponent(id)}`, {
+        method: "PUT",
         body: data,
       }),
-
-    update: async (id: string, data: unknown) =>
-      makeRequest(`/fabric-batches/${id}`, {
-        method: 'PUT',
-        body: data,
-      }),
-
-    delete: async (id: string) =>
-      makeRequest(`/fabric-batches/${id}`, {
-        method: 'DELETE',
+    delete: (id: string) =>
+      makeRequest(`/fabric-batches/${encodeURIComponent(id)}`, {
+        method: "DELETE",
       }),
   },
-
-  // Processing Operations
   processes: {
-    list: async (page = 1, limit = 10, status = '') =>
-      makeRequest('/processes', {
-        method: 'GET',
-      }),
-
-    get: async (id: string) =>
-      makeRequest(`/processes/${id}`),
-
-    create: async (data: unknown) =>
-      makeRequest('/processes', {
-        method: 'POST',
+    list: (page = 1, limit = 10, status = "") =>
+      makeRequest("/processes", { params: { page, limit, status } }),
+    get: (id: string) => makeRequest(`/processes/${encodeURIComponent(id)}`),
+    create: (data: unknown) =>
+      makeRequest("/processes", { method: "POST", body: data }),
+    update: (id: string, data: unknown) =>
+      makeRequest(`/processes/${encodeURIComponent(id)}`, {
+        method: "PUT",
         body: data,
       }),
-
-    update: async (id: string, data: unknown) =>
-      makeRequest(`/processes/${id}`, {
-        method: 'PUT',
-        body: data,
-      }),
-
-    delete: async (id: string) =>
-      makeRequest(`/processes/${id}`, {
-        method: 'DELETE',
-      }),
+    delete: (id: string) =>
+      makeRequest(`/processes/${encodeURIComponent(id)}`, { method: "DELETE" }),
   },
-
-  // Customers
   customers: {
-    list: async (page = 1, limit = 10, status = '') =>
-      makeRequest('/customers', {
-        method: 'GET',
-      }),
-
-    get: async (id: string) =>
-      makeRequest(`/customers/${id}`),
-
-    create: async (data: unknown) =>
-      makeRequest('/customers', {
-        method: 'POST',
+    list: (page = 1, limit = 10, status = "") =>
+      makeRequest("/customers", { params: { page, limit, status } }),
+    get: (id: string) => makeRequest(`/customers/${encodeURIComponent(id)}`),
+    create: (data: unknown) =>
+      makeRequest("/customers", { method: "POST", body: data }),
+    update: (id: string, data: unknown) =>
+      makeRequest(`/customers/${encodeURIComponent(id)}`, {
+        method: "PUT",
         body: data,
       }),
-
-    update: async (id: string, data: unknown) =>
-      makeRequest(`/customers/${id}`, {
-        method: 'PUT',
-        body: data,
-      }),
-
-    delete: async (id: string) =>
-      makeRequest(`/customers/${id}`, {
-        method: 'DELETE',
-      }),
+    delete: (id: string) =>
+      makeRequest(`/customers/${encodeURIComponent(id)}`, { method: "DELETE" }),
   },
-
-  // Invoices
   invoices: {
-    list: async (page = 1, limit = 10, status = '') =>
-      makeRequest('/invoices', {
-        method: 'GET',
-      }),
-
-    get: async (id: string) =>
-      makeRequest(`/invoices/${id}`),
-
-    create: async (data: unknown) =>
-      makeRequest('/invoices', {
-        method: 'POST',
+    list: (page = 1, limit = 10, status = "") =>
+      makeRequest("/invoices", { params: { page, limit, status } }),
+    get: (id: string) => makeRequest(`/invoices/${encodeURIComponent(id)}`),
+    create: (data: unknown) =>
+      makeRequest("/invoices", { method: "POST", body: data }),
+    update: (id: string, data: unknown) =>
+      makeRequest(`/invoices/${encodeURIComponent(id)}`, {
+        method: "PUT",
         body: data,
       }),
-
-    update: async (id: string, data: unknown) =>
-      makeRequest(`/invoices/${id}`, {
-        method: 'PUT',
-        body: data,
-      }),
-
-    delete: async (id: string) =>
-      makeRequest(`/invoices/${id}`, {
-        method: 'DELETE',
-      }),
+    delete: (id: string) =>
+      makeRequest(`/invoices/${encodeURIComponent(id)}`, { method: "DELETE" }),
   },
-
-  // Reports
   reports: {
-    metrics: async (timeRange = 'month') =>
-      makeRequest(`/reports/metrics?time_range=${timeRange}`, {
-        method: 'GET',
-      }),
-
-    trends: async (timeRange = 'month') =>
-      makeRequest(`/reports/trends?time_range=${timeRange}`, {
-        method: 'GET',
-      }),
-
-    export: async (format = 'pdf') =>
-      makeRequest('/reports/export', {
-        method: 'POST',
-        body: { format },
-      }),
+    metrics: (timeRange = "month") =>
+      makeRequest("/reports/metrics", { params: { time_range: timeRange } }),
+    trends: (timeRange = "month") =>
+      makeRequest("/reports/trends", { params: { time_range: timeRange } }),
+    export: (format = "pdf") =>
+      makeRequest("/reports/export", { method: "POST", body: { format } }),
   },
-}
+};
 
-export type { ApiResponse, ApiRequestOptions }
+export type { ApiResponse, ApiRequestOptions };

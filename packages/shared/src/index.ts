@@ -33,5 +33,12 @@ export { Skeleton, TableSkeleton, CardSkeleton, FormSkeleton } from './component
 // API and error handling
 export { api, ApiError, retryWithBackoff } from './lib/api'
 export { parseApiError, logError, formatValidationErrors, isRetryableError } from './lib/error'
-export type { ApiResponse, ApiRequestOptions } from './lib/api'
+export type {
+  ApiResponse,
+  ApiRequestOptions,
+  FabWashGstInvoice,
+  GstInvoiceParty,
+  GstInvoiceLineItem,
+  CreateFabWashGstInvoice,
+} from './lib/api'
 export type { UserFriendlyError } from './lib/error'

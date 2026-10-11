@@ -1,6 +1,6 @@
-'use client'
+"use client";
 
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Button,
   Input,
@@ -14,30 +14,33 @@ import {
   Pagination,
   type Application,
   type ApplicationFormData,
-} from '@nexora/shared'
-import { apiClient } from '@nexora/shared'
+  useAuthContext,
+} from "@nexora/shared";
+import { apiClient } from "@nexora/shared";
 
 export default function ApplicationsPage() {
-  const [applications, setApplications] = useState<Application[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [searchTerm, setSearchTerm] = useState('')
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
+  const { hasPermission } = useAuthContext();
+  const canCreate = hasPermission("application:create");
+  const canUpdate = hasPermission("application:update");
+  const [applications, setApplications] = useState<Application[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<ApplicationFormData>({
-    name: '',
-    description: '',
-    app_id: '',
-  })
+    name: "",
+    description: "",
+  });
 
   // Pagination
   const filteredApps = useMemo(() => {
     return applications.filter(
       (app) =>
         app.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        app.app_id?.toLowerCase().includes(searchTerm.toLowerCase())
-    )
-  }, [applications, searchTerm])
+        app.description?.toLowerCase().includes(searchTerm.toLowerCase()),
+    );
+  }, [applications, searchTerm]);
 
   const {
     page,
@@ -51,23 +54,25 @@ export default function ApplicationsPage() {
     endIndex,
     goToPage,
     setSize,
-  } = usePagination(filteredApps, { defaultPageSize: 10 })
+  } = usePagination(filteredApps, { defaultPageSize: 10 });
 
   useEffect(() => {
-    loadApplications()
-  }, [])
+    loadApplications();
+  }, []);
 
   const loadApplications = async () => {
-    setLoading(true)
+    setLoading(true);
     try {
-      const data = await apiClient.applications.list()
-      setApplications(data)
+      const data = await apiClient.applications.list();
+      setApplications(data);
     } catch (err) {
-      setError('Failed to load applications')
+      setError(
+        err instanceof Error ? err.message : "Failed to load applications",
+      );
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const {
     errors: validationErrors,
@@ -77,104 +82,121 @@ export default function ApplicationsPage() {
     setSubmitError,
   } = useFormValidation(ApplicationSchema, {
     onSubmit: async (data: unknown) => {
-      const appData = data as ApplicationFormData
+      const appData = data as ApplicationFormData;
       if (editingId) {
-        await apiClient.applications.update(editingId, appData)
+        if (!canUpdate)
+          throw new Error("You do not have permission to update applications");
+        await apiClient.applications.update(editingId, appData);
       } else {
-        await apiClient.applications.create(appData)
+        if (!canCreate)
+          throw new Error("You do not have permission to create applications");
+        await apiClient.applications.create(appData);
       }
-      setDialogOpen(false)
-      setFormData({ name: '', description: '', app_id: '' })
-      await loadApplications()
+      setDialogOpen(false);
+      setFormData({ name: "", description: "" });
+      await loadApplications();
     },
-  })
+  });
 
   const handleOpenDialog = (app?: Application) => {
     if (app) {
-      setEditingId(app.id)
+      setEditingId(app.id);
       setFormData({
         name: app.name,
-        description: app.description || '',
-        app_id: app.app_id,
-      })
+        description: app.description || "",
+      });
     } else {
-      setEditingId(null)
-      setFormData({ name: '', description: '', app_id: '' })
+      setEditingId(null);
+      setFormData({ name: "", description: "" });
     }
-    setSubmitError('')
-    setDialogOpen(true)
-  }
+    setSubmitError("");
+    setDialogOpen(true);
+  };
 
   const handleFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    await handleSubmit(formData)
-  }
+    e.preventDefault();
+    await handleSubmit(formData);
+  };
 
-  const handleDelete = async (appId: string) => {
-    if (!confirm('Are you sure you want to delete this application?')) return
+  const handleToggleStatus = async (app: Application) => {
     try {
-      await apiClient.applications.delete(appId)
-      await loadApplications()
+      if (app.status === "active") {
+        await apiClient.applications.deactivate(app.id);
+      } else {
+        await apiClient.applications.activate(app.id);
+      }
+      await loadApplications();
     } catch (err) {
-      alert('Failed to delete application')
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to update application status",
+      );
     }
-  }
+  };
 
   const columns = [
     {
-      key: 'name',
-      label: 'Name',
-      render: (value: unknown) => <span className="font-medium">{String(value)}</span>,
-    },
-    {
-      key: 'app_id',
-      label: 'App ID',
+      key: "name",
+      label: "Name",
       render: (value: unknown) => (
-        <code className="text-sm bg-gray-100 px-2 py-1 rounded">{String(value)}</code>
+        <span className="font-medium">{String(value)}</span>
       ),
     },
     {
-      key: 'description',
-      label: 'Description',
+      key: "status",
+      label: "Status",
       render: (value: unknown) => (
-        <span className="text-sm text-gray-600">{value ? String(value) : '-'}</span>
-      ),
-    },
-    {
-      key: 'is_active',
-      label: 'Status',
-      render: (value: unknown) => (
-        <Badge variant={value ? 'success' : 'warning'}>
-          {value ? 'Active' : 'Inactive'}
+        <Badge
+          variant={
+            String(value).toLowerCase() === "active" ? "success" : "warning"
+          }
+        >
+          {String(value).toLowerCase() === "suspended"
+            ? "Inactive"
+            : String(value)}
         </Badge>
       ),
     },
     {
-      key: 'id',
-      label: 'Actions',
+      key: "description",
+      label: "Description",
+      render: (value: unknown) => (
+        <span className="text-sm text-gray-600">
+          {value ? String(value) : "-"}
+        </span>
+      ),
+    },
+    {
+      key: "id",
+      label: "Actions",
       render: (_: unknown, row: unknown) => {
-        const app = row as Application
+        const app = row as Application;
         return (
           <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => handleOpenDialog(app)}
-            >
-              Edit
-            </Button>
-            <Button
-              size="sm"
-              variant="danger"
-              onClick={() => handleDelete(app.id)}
-            >
-              Delete
-            </Button>
+            {canUpdate && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => handleOpenDialog(app)}
+              >
+                Edit
+              </Button>
+            )}
+            {canUpdate && app.status !== "archived" && (
+              <Button
+                size="sm"
+                variant={app.status === "active" ? "secondary" : "primary"}
+                onClick={() => handleToggleStatus(app)}
+              >
+                {app.status === "active" ? "Deactivate" : "Activate"}
+              </Button>
+            )}
           </div>
-        )
+        );
       },
     },
-  ]
+  ];
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -182,9 +204,11 @@ export default function ApplicationsPage() {
       <header className="bg-white shadow">
         <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 flex justify-between items-center">
           <h1 className="text-3xl font-bold text-gray-900">Applications</h1>
-          <Button variant="primary" onClick={() => handleOpenDialog()}>
-            + Create Application
-          </Button>
+          {canCreate && (
+            <Button variant="primary" onClick={() => handleOpenDialog()}>
+              + Create Application
+            </Button>
+          )}
         </div>
       </header>
 
@@ -200,11 +224,11 @@ export default function ApplicationsPage() {
           {/* Search */}
           <div className="mb-6">
             <Input
-              placeholder="Search applications by name or app ID..."
+              placeholder="Search applications by name or description..."
               value={searchTerm}
               onChange={(e) => {
-                setSearchTerm(e.target.value)
-                goToPage(1)
+                setSearchTerm(e.target.value);
+                goToPage(1);
               }}
               fullWidth
             />
@@ -215,7 +239,11 @@ export default function ApplicationsPage() {
             data={displayedApps}
             columns={columns}
             loading={loading}
-            emptyMessage={searchTerm ? 'No applications match your search' : 'No applications found'}
+            emptyMessage={
+              searchTerm
+                ? "No applications match your search"
+                : "No applications found"
+            }
           />
 
           {/* Pagination */}
@@ -240,7 +268,7 @@ export default function ApplicationsPage() {
       {/* Dialog */}
       <Dialog
         open={dialogOpen}
-        title={editingId ? 'Edit Application' : 'Create Application'}
+        title={editingId ? "Edit Application" : "Create Application"}
         onClose={() => setDialogOpen(false)}
         actions={
           <>
@@ -254,9 +282,9 @@ export default function ApplicationsPage() {
             <Button
               variant="primary"
               onClick={handleFormSubmit}
-              disabled={isSubmitting}
+              disabled={isSubmitting || (editingId ? !canUpdate : !canCreate)}
             >
-              {isSubmitting ? 'Saving...' : editingId ? 'Update' : 'Create'}
+              {isSubmitting ? "Saving..." : editingId ? "Update" : "Create"}
             </Button>
           </>
         }
@@ -273,32 +301,18 @@ export default function ApplicationsPage() {
               label="Application Name"
               placeholder="e.g., FabWash"
               value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, name: e.target.value })
+              }
               required
               fullWidth
               error={validationErrors.name}
             />
             {validationErrors.name && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.name}</p>
+              <p className="text-sm text-red-600 mt-1">
+                {validationErrors.name}
+              </p>
             )}
-          </div>
-
-          <div>
-            <Input
-              label="App ID"
-              placeholder="e.g., fabwash_v2"
-              value={formData.app_id}
-              onChange={(e) => setFormData({ ...formData, app_id: e.target.value })}
-              required
-              fullWidth
-              error={validationErrors.app_id}
-            />
-            {validationErrors.app_id && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.app_id}</p>
-            )}
-            <p className="text-xs text-gray-500 mt-1">
-              Lowercase letters, numbers, hyphens, and underscores only
-            </p>
           </div>
 
           <div>
@@ -306,16 +320,20 @@ export default function ApplicationsPage() {
               label="Description"
               placeholder="What does this application do?"
               value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, description: e.target.value })
+              }
               fullWidth
               error={validationErrors.description}
             />
             {validationErrors.description && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.description}</p>
+              <p className="text-sm text-red-600 mt-1">
+                {validationErrors.description}
+              </p>
             )}
           </div>
         </form>
       </Dialog>
     </div>
-  )
+  );
 }

@@ -1,510 +1,393 @@
-'use client'
+"use client";
 
-import React, { useState, useEffect, useMemo } from 'react'
+import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
+  api,
   Button,
-  Input,
-  Card,
-  Table,
-  Dialog,
-  Badge,
-  useFormValidation,
-  usePagination,
-  Pagination,
-  useGetInvoices,
-  useCreateInvoice,
-  useUpdateInvoice,
-  useDeleteInvoice,
+  CreateFabWashGstInvoice,
+  FabWashGstInvoice,
+  GstInvoiceParty,
   parseApiError,
-} from '@nexora/shared'
-import { z } from 'zod'
+} from "@nexora/shared";
 
-// Validation schema for invoice generation
-const InvoiceSchema = z.object({
-  invoice_number: z
-    .string()
-    .regex(/^INV-\d{4}$/, 'Invoice must be in format INV-XXXX'),
-  customer_id: z
-    .string()
-    .min(1, 'Customer is required'),
-  batch_ids: z
-    .string()
-    .min(1, 'Batch IDs required'),
-  service_amount: z
-    .number()
-    .min(1, 'Amount must be at least SAR 1')
-    .positive('Amount must be positive'),
-  tax_amount: z
-    .number()
-    .min(0, 'Tax cannot be negative')
-    .optional(),
-  due_date: z
-    .string()
-    .min(1, 'Due date is required'),
-  notes: z
-    .string()
-    .max(500, 'Notes must not exceed 500 characters')
-    .optional(),
-})
+const emptyParty: GstInvoiceParty = {
+  name: "",
+  address: "",
+  gstin: "",
+  state: "",
+  state_code: "",
+  email: "",
+  phone: "",
+};
 
-type InvoiceFormData = z.infer<typeof InvoiceSchema>
+const today = () => new Date().toISOString().slice(0, 10);
 
-interface Invoice extends InvoiceFormData {
-  id: string
-  issued_at: string
-  status: 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled'
-  total_amount: number
+function initialInvoice(): CreateFabWashGstInvoice {
+  return {
+    invoice_date: today(),
+    due_date: today(),
+    seller: { ...emptyParty },
+    buyer: { ...emptyParty },
+    place_of_supply: "",
+    place_of_supply_code: "",
+    line_items: [
+      {
+        description: "",
+        sac: "",
+        quantity: 1,
+        unit: "kg",
+        rate: 0,
+        gst_rate: 18,
+      },
+    ],
+  };
+}
+
+const inr = (value: string | number) =>
+  Number(value).toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+  });
+
+function PartyFields({
+  title,
+  party,
+  update,
+}: {
+  title: string;
+  party: GstInvoiceParty;
+  update: (party: GstInvoiceParty) => void;
+}) {
+  const field = (key: keyof GstInvoiceParty, label: string) => (
+    <label className="block text-sm font-medium text-slate-700" key={key}>
+      {label}
+      <input
+        required={
+          key !== "email" &&
+          key !== "phone" &&
+          !(title === "Recipient" && key === "gstin")
+        }
+        value={party[key] ?? ""}
+        onChange={(event) => update({ ...party, [key]: event.target.value })}
+        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-normal"
+      />
+    </label>
+  );
+
+  return (
+    <fieldset className="space-y-3 rounded-xl border border-slate-200 p-4">
+      <legend className="px-2 font-semibold text-slate-900">{title}</legend>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {field("name", "Legal name")}
+        {field("gstin", "GSTIN")}
+        {field("state", "State")}
+        {field("state_code", "GST state code (2 digits)")}
+      </div>
+      {field("address", "Full address")}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {field("email", "Email (optional)")}
+        {field("phone", "Phone (optional)")}
+      </div>
+    </fieldset>
+  );
 }
 
 export default function InvoicesPage() {
-  const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [pageError, setPageError] = useState('')
-  const [searchTerm, setSearchTerm] = useState('')
-  const [filterStatus, setFilterStatus] = useState<'all' | 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled'>('all')
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [formData, setFormData] = useState<InvoiceFormData>({
-    invoice_number: '',
-    customer_id: '',
-    batch_ids: '',
-    service_amount: 0,
-    tax_amount: 0,
-    due_date: '',
-    notes: '',
-  })
+  const [invoices, setInvoices] = useState<FabWashGstInvoice[]>([]);
+  const [selected, setSelected] = useState<FabWashGstInvoice | null>(null);
+  const [draft, setDraft] = useState<CreateFabWashGstInvoice>(initialInvoice);
+  const [showForm, setShowForm] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  // API hooks
-  const { data: fetchedInvoices, loading, error: fetchError, fetch: fetchInvoices } = useGetInvoices()
-  const { create: createInvoice, error: _createError } = useCreateInvoice()
-  const { update: updateInvoice, error: _updateError } = useUpdateInvoice()
-  const { delete: deleteInvoice, error: _deleteError } = useDeleteInvoice()
-
-  // Pagination
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((invoice) => {
-      const matchesSearch =
-        invoice.invoice_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        invoice.customer_id.toLowerCase().includes(searchTerm.toLowerCase())
-      const matchesStatus = filterStatus === 'all' || invoice.status === filterStatus
-      return matchesSearch && matchesStatus
-    })
-  }, [invoices, searchTerm, filterStatus])
-
-  const {
-    page,
-    pageSize,
-    paginatedItems: displayedInvoices,
-    totalPages,
-    hasNextPage,
-    hasPrevPage,
-    total,
-    startIndex,
-    endIndex,
-    goToPage,
-    setSize,
-  } = usePagination(filteredInvoices, { defaultPageSize: 10 })
-
-  const loadInvoices = async () => {
+  const loadInvoices = useCallback(async () => {
+    setLoading(true);
     try {
-      await fetchInvoices()
-      setPageError('')
+      const response = await api.fabwashInvoices.list();
+      setInvoices(response.data);
+      setError("");
     } catch (err) {
-      setPageError(parseApiError(err).message)
+      setError(parseApiError(err).message);
+    } finally {
+      setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
-    loadInvoices()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    void loadInvoices();
+  }, [loadInvoices]);
 
-  // Update invoices when fetched data changes
-  useEffect(() => {
-    if (fetchedInvoices.length > 0) {
-      setInvoices(fetchedInvoices)
-    }
-  }, [fetchedInvoices])
-
-  const {
-    errors: validationErrors,
-    isSubmitting,
-    submitError,
-    handleSubmit,
-    setSubmitError,
-  } = useFormValidation(InvoiceSchema, {
-    onSubmit: async (data: unknown) => {
-      const invoiceData = data as InvoiceFormData
-      try {
-        if (editingId) {
-          // Update existing invoice
-          const updated = await updateInvoice(editingId, invoiceData)
-          setInvoices(invoices.map((i) => (i.id === editingId ? { ...i, ...updated } : i)))
-        } else {
-          // Create new invoice
-          const created = await createInvoice(invoiceData)
-          setInvoices([...invoices, created])
-        }
-        setDialogOpen(false)
-        setFormData({
-          invoice_number: '',
-          customer_id: '',
-          batch_ids: '',
-          service_amount: 0,
-          tax_amount: 0,
-          due_date: '',
-          notes: '',
-        })
-      } catch (err) {
-        setSubmitError(parseApiError(err).message)
-      }
-    },
-  })
-
-  const handleOpenDialog = (invoice?: Invoice) => {
-    if (invoice) {
-      setEditingId(invoice.id)
-      setFormData({
-        invoice_number: invoice.invoice_number,
-        customer_id: invoice.customer_id,
-        batch_ids: invoice.batch_ids,
-        service_amount: invoice.service_amount,
-        tax_amount: invoice.tax_amount,
-        due_date: invoice.due_date,
-        notes: invoice.notes,
-      })
-    } else {
-      setEditingId(null)
-      setFormData({
-        invoice_number: '',
-        customer_id: '',
-        batch_ids: '',
-        service_amount: 0,
-        tax_amount: 0,
-        due_date: '',
-        notes: '',
-      })
-    }
-    setSubmitError('')
-    setDialogOpen(true)
-  }
-
-  const handleFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    await handleSubmit(formData)
-  }
-
-  const handleDelete = async (invoiceId: string) => {
-    if (!confirm('Are you sure you want to delete this invoice?')) return
-    try {
-      await deleteInvoice(invoiceId)
-      setInvoices(invoices.filter((i) => i.id !== invoiceId))
-    } catch (err) {
-      setPageError(parseApiError(err).message)
-    }
-  }
-
-  const columns = [
-    {
-      key: 'invoice_number',
-      label: 'Invoice #',
-      render: (value: unknown) => <span className="font-mono font-bold">{String(value)}</span>,
-    },
-    {
-      key: 'customer_id',
-      label: 'Customer ID',
-      render: (value: unknown) => <span className="font-mono">{String(value)}</span>,
-    },
-    {
-      key: 'batch_ids',
-      label: 'Batch ID',
-      render: (value: unknown) => <span className="font-mono">{String(value)}</span>,
-    },
-    {
-      key: 'total_amount',
-      label: 'Total (SAR)',
-      render: (value: unknown) => (
-        <span className="font-bold text-green-700">{Number(value).toLocaleString('ar-SA')}</span>
+  const updateLine = (
+    lineIndex: number,
+    key: keyof CreateFabWashGstInvoice["line_items"][number],
+    value: string,
+  ) => {
+    const numeric = key === "quantity" || key === "rate" || key === "gst_rate";
+    setDraft((current) => ({
+      ...current,
+      line_items: current.line_items.map((item, index) =>
+        index === lineIndex
+          ? { ...item, [key]: numeric ? Number(value) : value }
+          : item,
       ),
-    },
-    {
-      key: 'due_date',
-      label: 'Due Date',
-      render: (value: unknown) => {
-        const date = new Date(String(value))
-        return <span>{date.toLocaleDateString('en-SA')}</span>
-      },
-    },
-    {
-      key: 'status',
-      label: 'Status',
-      render: (value: unknown) => {
-        const status = String(value)
-        const colors: Record<string, 'success' | 'warning' | 'danger' | 'info'> = {
-          draft: 'info',
-          sent: 'warning',
-          paid: 'success',
-          overdue: 'danger',
-          cancelled: 'warning',
-        }
-        return <Badge variant={colors[status] || 'info'}>{status}</Badge>
-      },
-    },
-    {
-      key: 'id',
-      label: 'Actions',
-      render: (_: unknown, row: unknown) => {
-        const invoice = row as Invoice
-        return (
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => handleOpenDialog(invoice)}
-            >
-              Edit
-            </Button>
-            <Button
-              size="sm"
-              variant="danger"
-              onClick={() => handleDelete(invoice.id)}
-            >
-              Delete
-            </Button>
-          </div>
-        )
-      },
-    },
-  ]
+    }));
+  };
+
+  const addLine = () =>
+    setDraft((current) => ({
+      ...current,
+      line_items: [
+        ...current.line_items,
+        { description: "", sac: "", quantity: 1, unit: "kg", rate: 0, gst_rate: 18 },
+      ],
+    }));
+
+  const issueInvoice = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const response = await api.fabwashInvoices.create(draft);
+      const invoice = response.data;
+      setInvoices((current) => [invoice, ...current]);
+      setSelected(invoice);
+      setShowForm(false);
+      setDraft(initialInvoice());
+    } catch (err) {
+      setError(parseApiError(err).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 flex justify-between items-center">
+    <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-900 sm:px-8">
+      <div className="mx-auto max-w-6xl">
+        <header className="no-print mb-7 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Invoicing</h1>
-            <p className="text-sm text-gray-600 mt-1">Manage fabric processing invoices and payments</p>
+            <h1 className="text-3xl font-bold">GST Invoices</h1>
+            <p className="mt-1 text-slate-600">
+              Issue and print tenant-specific GST invoices in INR.
+            </p>
           </div>
-          <Button variant="primary" onClick={() => handleOpenDialog()}>
-            + Create Invoice
-          </Button>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
-        {pageError && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 mb-4">
-            {pageError}
-          </div>
-        )}
-        {fetchError && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 mb-4">
-            {fetchError}
-          </div>
-        )}
-
-        <Card className="p-6">
-          {/* Filters */}
-          <div className="mb-6 grid gap-4 md:grid-cols-2">
-            <Input
-              placeholder="Search by invoice # or customer..."
-              value={searchTerm}
-              onChange={(e) => {
-                setSearchTerm(e.target.value)
-                goToPage(1)
-              }}
-              fullWidth
-            />
-            <select
-              value={filterStatus}
-              onChange={(e) => {
-                setFilterStatus(e.target.value as 'all' | 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled')
-                goToPage(1)
-              }}
-              className="rounded-md border border-gray-300 px-3 py-2"
+          <div className="flex flex-wrap gap-3">
+            <Link
+              href="/invoice-samples"
+              className="rounded-md border border-cyan-700 px-4 py-2 font-semibold text-cyan-900 hover:bg-cyan-50"
             >
-              <option value="all">All Statuses</option>
-              <option value="draft">Draft</option>
-              <option value="sent">Sent</option>
-              <option value="paid">Paid</option>
-              <option value="overdue">Overdue</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </div>
-
-          {/* Table */}
-          <Table
-            data={displayedInvoices}
-            columns={columns}
-            loading={loading}
-            emptyMessage={
-              searchTerm || filterStatus !== 'all'
-                ? 'No invoices match your filters'
-                : 'No invoices created yet'
-            }
-          />
-
-          {/* Pagination */}
-          {total > 0 && (
-            <Pagination
-              page={page}
-              totalPages={totalPages}
-              hasNextPage={hasNextPage}
-              hasPrevPage={hasPrevPage}
-              total={total}
-              pageSize={pageSize}
-              startIndex={startIndex}
-              endIndex={endIndex}
-              onPageChange={goToPage}
-              onPageSizeChange={setSize}
-              pageSizeOptions={[10, 25, 50]}
-            />
-          )}
-        </Card>
-      </main>
-
-      {/* Dialog */}
-      <Dialog
-        open={dialogOpen}
-        title={editingId ? 'Edit Invoice' : 'Create Invoice'}
-        onClose={() => setDialogOpen(false)}
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => setDialogOpen(false)}
-              disabled={isSubmitting}
-            >
-              Cancel
-            </Button>
+              View illustrative examples
+            </Link>
             <Button
               variant="primary"
-              onClick={handleFormSubmit}
-              disabled={isSubmitting}
+              onClick={() => {
+                setSelected(null);
+                setError("");
+                setDraft(initialInvoice());
+                setShowForm(true);
+              }}
             >
-              {isSubmitting ? 'Saving...' : editingId ? 'Update' : 'Create'}
+              Create GST invoice
             </Button>
-          </>
-        }
-      >
-        <form className="space-y-4" onSubmit={handleFormSubmit}>
-          {submitError && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-              {submitError}
+          </div>
+        </header>
+
+        {error && (
+          <div role="alert" className="no-print mb-5 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+            {error}
+          </div>
+        )}
+
+        {selected && (
+          <section className="invoice-paper mb-7 rounded-xl bg-white p-8 shadow-sm">
+            <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-widest text-cyan-800">
+                  Tax invoice
+                </p>
+                <h2 className="mt-1 text-2xl font-bold">{selected.invoice_number}</h2>
+                <p className="text-sm text-slate-600">
+                  Invoice date {selected.invoice_date} · Due {selected.due_date}
+                </p>
+              </div>
+              <Button variant="secondary" onClick={() => window.print()}>
+                Print / Save PDF
+              </Button>
+            </div>
+            <div className="grid gap-6 border-y border-slate-200 py-5 sm:grid-cols-2">
+              {[
+                ["Supplier", selected.seller],
+                ["Bill to", selected.buyer],
+              ].map(([label, party]) => {
+                const details = party as GstInvoiceParty;
+                return (
+                  <section key={String(label)}>
+                    <h3 className="mb-2 font-semibold">{String(label)}</h3>
+                    <p className="font-medium">{details.name}</p>
+                    <p className="whitespace-pre-line text-sm text-slate-600">{details.address}</p>
+                    {details.gstin && <p className="text-sm">GSTIN: {details.gstin}</p>}
+                    <p className="text-sm">{details.state} ({details.state_code})</p>
+                  </section>
+                );
+              })}
+            </div>
+            <p className="my-4 text-sm text-slate-700">
+              Place of supply: {selected.place_of_supply} ({selected.place_of_supply_code}) ·{" "}
+            {selected.supply_type} · Reverse charge: {selected.reverse_charge}
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-300">
+                    <th className="py-3 pr-3">Description / SAC</th>
+                    <th className="py-3 pr-3">Qty</th>
+                    <th className="py-3 pr-3">Rate</th>
+                    <th className="py-3 pr-3">Taxable</th>
+                    <th className="py-3 pr-3">GST</th>
+                    <th className="py-3 text-right">Line total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selected.line_items.map((item, index) => (
+                    <tr key={`${item.sac}-${index}`} className="border-b border-slate-100">
+                      <td className="py-3 pr-3">{item.description}<br />SAC {item.sac}</td>
+                      <td className="py-3 pr-3">{item.quantity} {item.unit}</td>
+                      <td className="py-3 pr-3">{inr(item.rate)}</td>
+                      <td className="py-3 pr-3">{inr(item.taxable_value)}</td>
+                      <td className="py-3 pr-3">{item.gst_rate}%</td>
+                      <td className="py-3 text-right">
+                        {inr(Number(item.taxable_value) + Number(item.cgst_amount) + Number(item.sgst_amount) + Number(item.igst_amount))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <dl className="ml-auto mt-5 grid max-w-sm grid-cols-2 gap-2 text-sm">
+              <dt>Taxable value</dt><dd className="text-right">{inr(selected.taxable_value)}</dd>
+              {selected.supply_type === "intra-state" ? (
+                <>
+                  <dt>CGST</dt><dd className="text-right">{inr(selected.cgst_amount)}</dd>
+                  <dt>SGST</dt><dd className="text-right">{inr(selected.sgst_amount)}</dd>
+                </>
+              ) : (
+                <><dt>IGST</dt><dd className="text-right">{inr(selected.igst_amount)}</dd></>
+              )}
+              <dt className="border-t border-slate-300 pt-2 font-bold">Invoice total</dt>
+              <dd className="border-t border-slate-300 pt-2 text-right font-bold">{inr(selected.invoice_total)}</dd>
+            </dl>
+            {selected.notes && <p className="mt-5 text-sm">{selected.notes}</p>}
+          </section>
+        )}
+
+        <section className="no-print overflow-hidden rounded-xl bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <h2 className="font-semibold">Issued invoices</h2>
+          </div>
+          {loading ? (
+            <p className="p-6 text-slate-600">Loading invoices…</p>
+          ) : invoices.length === 0 ? (
+            <p className="p-6 text-slate-600">No GST invoices have been issued.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="px-5 py-3">Invoice</th>
+                    <th className="px-5 py-3">Customer</th>
+                    <th className="px-5 py-3">Date</th>
+                    <th className="px-5 py-3">Total</th>
+                    <th className="px-5 py-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {invoices.map((invoice) => (
+                    <tr key={invoice.id} className="border-t border-slate-100">
+                      <td className="px-5 py-3 font-mono">{invoice.invoice_number}</td>
+                      <td className="px-5 py-3">{invoice.buyer.name}</td>
+                      <td className="px-5 py-3">{invoice.invoice_date}</td>
+                      <td className="px-5 py-3 font-semibold">{inr(invoice.invoice_total)}</td>
+                      <td className="px-5 py-3">
+                        <button
+                          className="font-semibold text-cyan-800 hover:underline"
+                          onClick={() => setSelected(invoice)}
+                        >
+                          View / print
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
+        </section>
 
-          <div>
-            <Input
-              label="Invoice Number"
-              placeholder="INV-0001"
-              value={formData.invoice_number}
-              onChange={(e) => setFormData({ ...formData, invoice_number: e.target.value })}
-              required
-              fullWidth
-              error={validationErrors.invoice_number}
-            />
-            {validationErrors.invoice_number && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.invoice_number}</p>
-            )}
+        {showForm && (
+          <div className="no-print fixed inset-0 z-50 overflow-y-auto bg-slate-950/50 p-4">
+            <form
+              onSubmit={issueInvoice}
+              className="mx-auto my-6 max-w-3xl space-y-5 rounded-2xl bg-white p-6 shadow-xl"
+            >
+              <header>
+                <h2 className="text-2xl font-bold">Issue GST invoice</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Enter verified supplier and recipient details. Confirm the SAC, GST rate, place of supply, and reverse-charge treatment with your tax adviser; the app does not determine these.
+                </p>
+              </header>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-sm font-medium">Invoice date<input required type="date" value={draft.invoice_date} onChange={(e) => setDraft({ ...draft, invoice_date: e.target.value })} className="mt-1 w-full rounded-md border p-2" /></label>
+                <label className="text-sm font-medium">Due date<input required type="date" value={draft.due_date} onChange={(e) => setDraft({ ...draft, due_date: e.target.value })} className="mt-1 w-full rounded-md border p-2" /></label>
+              </div>
+              <PartyFields title="Supplier" party={draft.seller} update={(seller) => setDraft({ ...draft, seller })} />
+              <PartyFields title="Recipient" party={draft.buyer} update={(buyer) => setDraft({ ...draft, buyer, place_of_supply: buyer.state, place_of_supply_code: buyer.state_code })} />
+              <div className="space-y-4">
+                {draft.line_items.map((line, index) => (
+                  <fieldset key={index} className="space-y-3 rounded-xl border border-slate-200 p-4">
+                    <legend className="px-2 font-semibold">Service line {index + 1}</legend>
+                    <label className="block text-sm font-medium">Description<input required value={line.description} onChange={(e) => updateLine(index, "description", e.target.value)} className="mt-1 w-full rounded-md border p-2" /></label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="text-sm font-medium">SAC<input required pattern="\d{4,8}" value={line.sac} onChange={(e) => updateLine(index, "sac", e.target.value)} className="mt-1 w-full rounded-md border p-2" /></label>
+                      <label className="text-sm font-medium">Unit<input required value={line.unit} onChange={(e) => updateLine(index, "unit", e.target.value)} className="mt-1 w-full rounded-md border p-2" /></label>
+                      <label className="text-sm font-medium">Quantity<input required type="number" min="0.001" step="0.001" value={line.quantity} onChange={(e) => updateLine(index, "quantity", e.target.value)} className="mt-1 w-full rounded-md border p-2" /></label>
+                      <label className="text-sm font-medium">Rate per unit (₹)<input required type="number" min="0" step="0.01" value={line.rate} onChange={(e) => updateLine(index, "rate", e.target.value)} className="mt-1 w-full rounded-md border p-2" /></label>
+                      <label className="text-sm font-medium">GST rate (%)<input required type="number" min="0" max="100" step="0.01" value={line.gst_rate} onChange={(e) => updateLine(index, "gst_rate", e.target.value)} className="mt-1 w-full rounded-md border p-2" /></label>
+                    </div>
+                    {draft.line_items.length > 1 && (
+                      <button type="button" className="text-sm font-semibold text-red-700" onClick={() => setDraft((current) => ({ ...current, line_items: current.line_items.filter((_, lineIndex) => lineIndex !== index) }))}>
+                        Remove line
+                      </button>
+                    )}
+                  </fieldset>
+                ))}
+                <Button type="button" variant="secondary" onClick={addLine}>Add service line</Button>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={draft.reverse_charge ?? false} onChange={(e) => setDraft({ ...draft, reverse_charge: e.target.checked })} />
+                Reverse charge applies (confirm with your tax adviser)
+              </label>
+              <label className="block text-sm font-medium">Reference (optional)<input value={draft.reference ?? ""} onChange={(e) => setDraft({ ...draft, reference: e.target.value })} className="mt-1 w-full rounded-md border p-2" /></label>
+              <label className="block text-sm font-medium">Notes (optional)<textarea value={draft.notes ?? ""} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} className="mt-1 w-full rounded-md border p-2" /></label>
+              <div className="flex justify-end gap-3">
+                <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>Cancel</Button>
+                <Button variant="primary" type="submit" disabled={saving}>{saving ? "Issuing…" : "Issue invoice"}</Button>
+              </div>
+            </form>
           </div>
-
-          <div>
-            <Input
-              label="Customer ID"
-              placeholder="e.g., GLOB-001"
-              value={formData.customer_id}
-              onChange={(e) => setFormData({ ...formData, customer_id: e.target.value })}
-              required
-              fullWidth
-              error={validationErrors.customer_id}
-            />
-            {validationErrors.customer_id && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.customer_id}</p>
-            )}
-          </div>
-
-          <div>
-            <Input
-              label="Batch IDs"
-              placeholder="e.g., FB-2024-001, FB-2024-002"
-              value={formData.batch_ids}
-              onChange={(e) => setFormData({ ...formData, batch_ids: e.target.value })}
-              required
-              fullWidth
-              error={validationErrors.batch_ids}
-            />
-            {validationErrors.batch_ids && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.batch_ids}</p>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Input
-                label="Service Amount (SAR)"
-                type="number"
-                step="100"
-                min="1"
-                value={formData.service_amount}
-                onChange={(e) => setFormData({ ...formData, service_amount: Number(e.target.value) })}
-                required
-                fullWidth
-                error={validationErrors.service_amount}
-              />
-              {validationErrors.service_amount && (
-                <p className="text-sm text-red-600 mt-1">{validationErrors.service_amount}</p>
-              )}
-            </div>
-
-            <div>
-              <Input
-                label="Tax Amount (SAR)"
-                type="number"
-                step="50"
-                min="0"
-                value={formData.tax_amount || 0}
-                onChange={(e) => setFormData({ ...formData, tax_amount: Number(e.target.value) })}
-                fullWidth
-                error={validationErrors.tax_amount}
-              />
-              {validationErrors.tax_amount && (
-                <p className="text-sm text-red-600 mt-1">{validationErrors.tax_amount}</p>
-              )}
-            </div>
-          </div>
-
-          <div>
-            <Input
-              label="Due Date"
-              type="date"
-              value={formData.due_date}
-              onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
-              required
-              fullWidth
-              error={validationErrors.due_date}
-            />
-            {validationErrors.due_date && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.due_date}</p>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-            <textarea
-              placeholder="Invoice notes or special instructions"
-              value={formData.notes || ''}
-              onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-              rows={3}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {validationErrors.notes && (
-              <p className="text-sm text-red-600 mt-1">{validationErrors.notes}</p>
-            )}
-          </div>
-        </form>
-      </Dialog>
-    </div>
-  )
+        )}
+      </div>
+      <style jsx global>{`
+        @media print {
+          @page { size: A4 portrait; margin: 12mm; }
+          body { background: white !important; }
+          .no-print { display: none !important; }
+          .invoice-paper { display: block !important; box-shadow: none !important; padding: 0 !important; }
+          .invoice-paper button { display: none !important; }
+          table { page-break-inside: auto; }
+          tr { page-break-inside: avoid; }
+        }
+      `}</style>
+    </main>
+  );
 }
